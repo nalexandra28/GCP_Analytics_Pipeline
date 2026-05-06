@@ -1,0 +1,13 @@
+{
+    "name": "analytics-service",
+    "version": "1.0.0",
+    "scripts": {
+        "start": "functions-framework --target=processEvent"
+        },
+    "dependencies": {
+        "@google-cloud/firestore": "^7.11.0",
+        "@google-cloud/pubsub": "^4.9.0",
+        "@google-cloud/functions-framework": "^3.0.0",
+        "@sinclair/typebox": "^0.34.48"
+    }
+}
