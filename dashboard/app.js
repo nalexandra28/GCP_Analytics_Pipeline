@@ -18,14 +18,39 @@ function renderRecentActivity(newActivity) {
 
     const container = document.getElementById("recent-activity");
 
+    const date = new Date(newActivity.timestamp)
+    const formatted = date.toLocaleString("en-GB", {
+        day: "numeric",
+        month: "long",
+        year: "numeric",
+        hour: "2-digit",
+        minute: "2-digit",
+        timeZone: "UTC"
+    });
+
     const p = document.createElement("p");
-    p.textContent = `${newActivity.timestamp} — ${newActivity.movieId} ${newActivity.movieTitle}`;
+    p.textContent = `${formatted} - ${newActivity.movieTitle}`;
     container.insertBefore(p, container.firstChild);
 
     if (container.children.length > RECENT_ACTIVITY_LENGTH) {
         container.removeChild(container.lastChild);
     }
 
+}
+
+function renderTopMovies(movies) {
+
+    const container = document.getElementById("top-accessed-movies");
+
+    while (container.firstChild) {
+        container.removeChild(container.firstChild);
+    }
+
+    for (const m of movies) {
+        const p = document.createElement("p");
+        p.textContent = `${m.title} - ${m.count}`;
+        container.appendChild(p);
+    }
 
 }
 
@@ -53,13 +78,30 @@ function connect(url) {
             const data = JSON.parse(event.data);
             console.log("Received:", data);
 
-            const movie = {
-                timestamp: data.timestamp,
-                movieId: data.data.movieId,
-                movieTitle: data.data.movieTitle
+            var type = data.type
+            var payload = data.payload
+
+            switch (type) {
+                case "event_notification":
+
+                    var movieData = payload.data
+                    var timestamp = payload.timestamp
+                    const movie = {
+                        timestamp: timestamp,
+                        movieId: movieData.movieId,
+                        movieTitle: movieData.movieTitle
+                    }
+
+                    renderRecentActivity(movie)
+                    break;
+                case "stats_update":
+
+                    renderTopMovies(payload)
+                    break;
+                default:
+                    console.log(`${type} event type does not exist`);
             }
 
-            renderRecentActivity(movie)
         }
 
         ws.onclose = (event) => {

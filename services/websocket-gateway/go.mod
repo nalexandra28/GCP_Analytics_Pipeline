@@ -4,7 +4,10 @@ go 1.25.0
 
 require github.com/coder/websocket v1.8.14
 
-require cloud.google.com/go/pubsub v1.50.2
+require (
+	cloud.google.com/go/firestore v1.21.0
+	cloud.google.com/go/pubsub v1.50.2
+)
 
 require (
 	cloud.google.com/go v0.123.0 // indirect
@@ -12,6 +15,7 @@ require (
 	cloud.google.com/go/auth/oauth2adapt v0.2.8 // indirect
 	cloud.google.com/go/compute/metadata v0.9.0 // indirect
 	cloud.google.com/go/iam v1.5.3 // indirect
+	cloud.google.com/go/longrunning v0.8.0 // indirect
 	cloud.google.com/go/pubsub/v2 v2.4.0 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
