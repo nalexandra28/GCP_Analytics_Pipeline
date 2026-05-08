@@ -54,6 +54,11 @@ function renderTopMovies(movies) {
 
 }
 
+function renderClientsUpdate(clients) {
+
+    document.getElementById("clients-count").textContent = clients;
+}
+
 function connect(url) {
 
     let retries = 0;
@@ -81,6 +86,16 @@ function connect(url) {
             var type = data.type
             var payload = data.payload
 
+            if (payload == null) {
+                console.log("data payload is null")
+                return
+            }
+
+            if (!type) {
+                console.log("message has no type field")
+                return
+            }
+
             switch (type) {
                 case "event_notification":
 
@@ -98,6 +113,12 @@ function connect(url) {
 
                     renderTopMovies(payload)
                     break;
+
+                case "clients_update":
+
+                    renderClientsUpdate(payload)
+                    break;
+
                 default:
                     console.log(`${type} event type does not exist`);
             }

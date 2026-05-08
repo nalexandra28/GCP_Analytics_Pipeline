@@ -3,12 +3,12 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
 	"os/signal"
-	"sort"
 	"syscall"
 	"time"
 
@@ -18,7 +18,26 @@ import (
 	"github.com/coder/websocket"
 )
 
-func startSubscriber(ctx context.Context, projectID string, subID string, out chan<- *pubsub.Message) error {
+type Hub struct {
+	clients    map[*websocket.Conn]bool
+	register   chan *websocket.Conn
+	unregister chan *websocket.Conn
+}
+
+type Message struct {
+	Data []byte
+}
+
+func makeHub() *Hub {
+
+	return &Hub{
+		clients:    make(map[*websocket.Conn]bool),
+		register:   make(chan *websocket.Conn, 10),
+		unregister: make(chan *websocket.Conn, 10),
+	}
+}
+
+func startSubscriber(ctx context.Context, projectID string, subID string, out chan<- Message) error {
 
 	client, err := pubsub.NewClient(ctx, projectID)
 	if err != nil {
@@ -35,16 +54,17 @@ func startSubscriber(ctx context.Context, projectID string, subID string, out ch
 		err := sub.Receive(ctx, func(_ context.Context, msg *pubsub.Message) {
 			log.Printf("pubsub: received message: %s", string(msg.Data))
 
-			wrapped, err := json.Marshal(map[string]any{
+			data, err := json.Marshal(map[string]any{
 				"type":    "event_notification",
 				"payload": json.RawMessage(msg.Data),
 			})
 			if err != nil {
 				log.Printf("marshal error: %v", err)
+				msg.Nack()
 				return
 			}
-			msg.Data = wrapped
-			out <- msg
+			msg.Ack()
+			out <- Message{Data: data}
 		})
 
 		if err != nil {
@@ -57,71 +77,9 @@ func startSubscriber(ctx context.Context, projectID string, subID string, out ch
 
 }
 
-func pollStats(ctx context.Context, client *firestore.Client, out chan<- *pubsub.Message) {
-
-	type movieCount struct {
-		Title string `json:"title"`
-		Count int    `json:"count"`
-	}
-
-	go func() {
-
-		for {
-
-			log.Println("polling stats..")
-
-			docs, err := client.Collection("movie-stats").Documents(ctx).GetAll()
-			if err != nil {
-				log.Printf("firestore collection error: %v", err)
-			}
-
-			for _, doc := range docs {
-				log.Printf("doc: %v", doc.Data())
-			}
-
-			counts := make(map[string]int)
-
-			for _, doc := range docs {
-				movieTitle := doc.Data()["movieTitle"].(string)
-				counts[movieTitle]++
-			}
-
-			var ranked []movieCount
-
-			for title, count := range counts {
-				ranked = append(ranked, movieCount{Title: title, Count: count})
-			}
-
-			sort.Slice(ranked, func(i, j int) bool {
-				return ranked[i].Count > ranked[j].Count
-			})
-
-			for _, m := range ranked {
-				log.Printf("title: %s, count: %d", m.Title, m.Count)
-			}
-
-			limit := min(len(ranked), 3)
-
-			data, err := json.Marshal(map[string]any{
-				"type":    "stats_update",
-				"payload": ranked[:limit],
-			})
-			if err != nil {
-				log.Printf("marshal error: %v", err)
-				return
-			}
-			out <- &pubsub.Message{Data: data}
-
-			time.Sleep(10 * time.Second)
-		}
-	}()
-
-}
-
-func handleWS(w http.ResponseWriter, r *http.Request, out <-chan *pubsub.Message) {
-
+func handleWS(w http.ResponseWriter, r *http.Request, h *Hub) {
 	opts := &websocket.AcceptOptions{}
-	opts.OriginPatterns = []string{"localhost:3000"}
+	opts.OriginPatterns = []string{"localhost:3000", "localhost:3001"}
 
 	conn, err := websocket.Accept(w, r, opts)
 	if err != nil {
@@ -129,21 +87,82 @@ func handleWS(w http.ResponseWriter, r *http.Request, out <-chan *pubsub.Message
 		return
 	}
 
-	defer conn.CloseNow()
-
-	ctx := conn.CloseRead(r.Context())
-
-	for data := range out {
-
-		err = conn.Write(ctx, websocket.MessageText, data.Data)
-		if err != nil {
-			log.Printf("websocket write error: %v", err)
-			data.Nack()
-			return
-		}
-		data.Ack()
-		log.Printf("websocket: sent message: %s", string(data.Data))
+	select {
+	case h.register <- conn:
+		log.Printf("client queued for registration")
+	default:
+		log.Printf("register channel full, rejecting connection")
+		conn.CloseNow()
 	}
+	h.register <- conn
+}
+
+func (h *Hub) runHub(ctx context.Context, out chan Message) {
+
+	for {
+
+		select {
+		case <-ctx.Done():
+
+			for c := range h.clients {
+				c.CloseNow()
+			}
+			return
+
+		case data := <-out:
+
+			for conn := range h.clients {
+				wctx, cancel := context.WithTimeout(
+					ctx, 10*time.Second,
+				)
+				err := conn.Write(wctx, websocket.MessageText, data.Data)
+				cancel()
+				if err != nil {
+					log.Printf("websocket write error: %v", err)
+					if errors.Is(err, context.DeadlineExceeded) {
+						log.Printf("write timeout for client, skipping message: %v", err)
+						continue
+					}
+
+					if websocket.CloseStatus(err) != -1 {
+						log.Printf("client disconnected, removing: %v", err)
+						h.unregister <- conn
+					} else {
+
+						log.Printf("write error, keeping client: %v", err)
+					}
+				}
+			}
+
+			log.Printf("websocket: sent message: %s", string(data.Data))
+
+		case conn := <-h.register:
+			h.clients[conn] = true
+
+			data, err := json.Marshal(map[string]any{
+				"type":    "clients_update",
+				"payload": len(h.clients),
+			})
+			if err != nil {
+				log.Printf("marshal error: %v", err)
+				return
+			}
+			out <- Message{Data: data}
+
+			go func(c *websocket.Conn) {
+
+				clientCtx := c.CloseRead(ctx)
+				<-clientCtx.Done()
+				h.unregister <- c
+			}(conn)
+
+		case conn := <-h.unregister:
+			delete(h.clients, conn)
+			conn.CloseNow()
+
+		}
+	}
+
 }
 
 func main() {
@@ -151,7 +170,9 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	out := make(chan *pubsub.Message, 100)
+	out := make(chan Message, 100)
+	hub := makeHub()
+	go hub.runHub(ctx, out)
 
 	projectID := os.Getenv("GCP_PROJECT_ID")
 	subID := os.Getenv("EVENT_NOTIFICATIONS_SUB")
@@ -167,10 +188,13 @@ func main() {
 		log.Fatalf("subscriber start failed: %v", err)
 	}
 
-	pollStats(ctx, client, out)
+	err = pollStats(ctx, client, out)
+	if err != nil {
+		log.Fatalf("firestore fetch collection failed: %v", err)
+	}
 
 	responseHandler := func(w http.ResponseWriter, r *http.Request) {
-		handleWS(w, r, out)
+		handleWS(w, r, hub)
 	}
 
 	http.HandleFunc("/ws", responseHandler)
