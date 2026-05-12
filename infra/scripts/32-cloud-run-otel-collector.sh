@@ -1,23 +1,22 @@
 #!/usr/bin/env bash
 set -euo pipefail
-
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "${SCRIPT_DIR}/../.." && pwd)"
 source "${SCRIPT_DIR}/lib.sh"
 
 PROJECT_NUMBER="$(gcloud projects describe "${GCP_PROJECT_ID}" --format='value(projectNumber)')"
+
 COMPUTE_SA="${PROJECT_NUMBER}-compute@developer.gserviceaccount.com"
 CB_SA="${PROJECT_NUMBER}@cloudbuild.gserviceaccount.com"
+OTEL_SA="otel-collector-sa@${GCP_PROJECT_ID}.iam.gserviceaccount.com"
 
-gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
-  --member="serviceAccount:${COMPUTE_SA}" \
-  --role="roles/pubsub.subscriber" \
-  --quiet
+if ! gcloud iam service-accounts describe "${OTEL_SA}" \
+  --project="${GCP_PROJECT_ID}" &>/dev/null; then
+  gcloud iam service-accounts create otel-collector-sa \
+    --display-name="OTel Collector" \
+    --project="${GCP_PROJECT_ID}"
+fi
 
-gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
-  --member="serviceAccount:${COMPUTE_SA}" \
-  --role="roles/logging.logWriter" \
-  --quiet
 
 gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
   --member="serviceAccount:${COMPUTE_SA}" \
@@ -29,15 +28,22 @@ gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
   --role="roles/cloudbuild.builds.builder" \
   --quiet
 
+gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+  --member="serviceAccount:${OTEL_SA}" \
+  --role="roles/monitoring.metricWriter" \
+  --quiet
 
+gcloud projects add-iam-policy-binding "${GCP_PROJECT_ID}" \
+  --member="serviceAccount:${OTEL_SA}" \
+  --role="roles/logging.logWriter" \
+  --quiet
+
+APP_DIR="${REPO_ROOT}/services/otel-collector"
 AR_REPOSITORY="myrepo"
-AR_IMAGE="ws-gateway"
+AR_IMAGE="otel-collector"
 AR_TAG="v1"
-CLOUD_RUN_SERVICE="ws-gateway"
-APP_PORT=8080
-
-APP_DIR="${REPO_ROOT}/services/websocket-gateway"
 IMAGE="${GCP_REGION}-docker.pkg.dev/${GCP_PROJECT_ID}/${AR_REPOSITORY}/${AR_IMAGE}:${AR_TAG}"
+CLOUD_RUN_SERVICE="otel-collector"
 
 if ! gcloud artifacts repositories describe "${AR_REPOSITORY}" \
   --location="${GCP_REGION}" --project="${GCP_PROJECT_ID}" &>/dev/null; then
@@ -52,18 +58,15 @@ fi
 echo "Build + push ${IMAGE} ..."
 gcloud builds submit "${APP_DIR}" --tag="${IMAGE}" --project="${GCP_PROJECT_ID}"
 
-echo "Deploy ${CLOUD_RUN_SERVICE} ..."
-NOTIF_SUB="event-notifications-ws-gateway"
 
-gcloud run deploy "${CLOUD_RUN_SERVICE}" \
+echo "Deploy ${CLOUD_RUN_SERVICE} ..."
+gcloud run deploy otel-collector \
   --image="${IMAGE}" \
-  --platform=managed \
   --region="${GCP_REGION}" \
   --allow-unauthenticated \
-  --port="${APP_PORT}" \
-  --min-instances=1 \
-  --max-instances=1 \
-  --set-env-vars="LOG_LEVEL=INFO,GCP_PROJECT_ID=${GCP_PROJECT_ID},EVENT_NOTIFICATIONS_SUB=${NOTIF_SUB}" \
+  --port 4318 \
+  --service-account="otel-collector-sa@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
+  --service-account="${OTEL_SA}" \
   --project="${GCP_PROJECT_ID}"
 
 echo "Done."

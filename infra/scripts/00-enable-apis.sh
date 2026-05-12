@@ -13,5 +13,9 @@ gcloud services enable \
   artifactregistry.googleapis.com \
   cloudfunctions.googleapis.com \
   eventarc.googleapis.com \
+  monitoring.googleapis.com \
+  logging.googleapis.com \
+  cloudresourcemanager.googleapis.com \
+  iam.googleapis.com \
   --project="${GCP_PROJECT_ID}"
 echo "Done."

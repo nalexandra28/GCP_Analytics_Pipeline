@@ -79,7 +79,7 @@ func startSubscriber(ctx context.Context, projectID string, subID string, out ch
 
 func handleWS(w http.ResponseWriter, r *http.Request, h *Hub) {
 	opts := &websocket.AcceptOptions{}
-	opts.OriginPatterns = []string{"localhost:3000", "localhost:3001"}
+	opts.InsecureSkipVerify = true
 
 	conn, err := websocket.Accept(w, r, opts)
 	if err != nil {
@@ -94,7 +94,6 @@ func handleWS(w http.ResponseWriter, r *http.Request, h *Hub) {
 		log.Printf("register channel full, rejecting connection")
 		conn.CloseNow()
 	}
-	h.register <- conn
 }
 
 func (h *Hub) runHub(ctx context.Context, out chan Message) {
@@ -112,11 +111,14 @@ func (h *Hub) runHub(ctx context.Context, out chan Message) {
 		case data := <-out:
 
 			for conn := range h.clients {
+				start := time.Now()
 				wctx, cancel := context.WithTimeout(
 					ctx, 10*time.Second,
 				)
 				err := conn.Write(wctx, websocket.MessageText, data.Data)
+				elapsed := time.Since(start)
 				cancel()
+
 				if err != nil {
 					log.Printf("websocket write error: %v", err)
 					if errors.Is(err, context.DeadlineExceeded) {
@@ -131,6 +133,8 @@ func (h *Hub) runHub(ctx context.Context, out chan Message) {
 
 						log.Printf("write error, keeping client: %v", err)
 					}
+				} else {
+					wsMessageLatency.Record(ctx, elapsed.Seconds()*1000)
 				}
 			}
 
@@ -138,6 +142,7 @@ func (h *Hub) runHub(ctx context.Context, out chan Message) {
 
 		case conn := <-h.register:
 			h.clients[conn] = true
+			wsConnections.Record(ctx, int64(len(h.clients)))
 
 			data, err := json.Marshal(map[string]any{
 				"type":    "clients_update",
@@ -182,6 +187,12 @@ func main() {
 		log.Fatalf("Firestore client creation error: %v", err)
 	}
 	defer client.Close()
+
+	shutdown, err := InitMetrics(ctx)
+	if err != nil {
+		log.Fatalf("Init metrics error: %v", err)
+	}
+	defer shutdown()
 
 	err = startSubscriber(ctx, projectID, subID, out)
 	if err != nil {
