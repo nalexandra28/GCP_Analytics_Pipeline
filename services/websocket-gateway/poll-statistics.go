@@ -29,7 +29,11 @@ func pollStats(ctx context.Context, client *firestore.Client, out chan<- Message
 
 			log.Println("polling stats..")
 
-			docs, err := client.Collection("movie-stats").Documents(ctx).GetAll()
+			now := time.Now()
+			oneHourAgo := now.Add(-1 * time.Hour)
+
+			docs, err := client.Collection("movie-stats").Where("timestamp", ">=", oneHourAgo).Documents(ctx).GetAll()
+
 			if err != nil {
 				log.Printf("firestore collection error: %v", err)
 			}

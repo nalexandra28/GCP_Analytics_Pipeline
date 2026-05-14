@@ -65,6 +65,8 @@ gcloud run deploy otel-collector \
   --region="${GCP_REGION}" \
   --allow-unauthenticated \
   --port 4318 \
+  --min-instances=1 \
+  --max-instances=1 \
   --service-account="otel-collector-sa@${GCP_PROJECT_ID}.iam.gserviceaccount.com" \
   --service-account="${OTEL_SA}" \
   --project="${GCP_PROJECT_ID}"

@@ -32,8 +32,8 @@ func makeHub() *Hub {
 
 	return &Hub{
 		clients:    make(map[*websocket.Conn]bool),
-		register:   make(chan *websocket.Conn, 10),
-		unregister: make(chan *websocket.Conn, 10),
+		register:   make(chan *websocket.Conn, 100),
+		unregister: make(chan *websocket.Conn, 100),
 	}
 }
 
@@ -134,6 +134,7 @@ func (h *Hub) runHub(ctx context.Context, out chan Message) {
 						log.Printf("write error, keeping client: %v", err)
 					}
 				} else {
+					log.Printf("recording latency: %f ms", elapsed.Seconds()*1000)
 					wsMessageLatency.Record(ctx, elapsed.Seconds()*1000)
 				}
 			}
@@ -142,7 +143,7 @@ func (h *Hub) runHub(ctx context.Context, out chan Message) {
 
 		case conn := <-h.register:
 			h.clients[conn] = true
-			wsConnections.Record(ctx, int64(len(h.clients)))
+			wsConnections.Add(ctx, 1)
 
 			data, err := json.Marshal(map[string]any{
 				"type":    "clients_update",
@@ -163,6 +164,7 @@ func (h *Hub) runHub(ctx context.Context, out chan Message) {
 
 		case conn := <-h.unregister:
 			delete(h.clients, conn)
+			wsConnections.Add(ctx, -1)
 			conn.CloseNow()
 
 		}

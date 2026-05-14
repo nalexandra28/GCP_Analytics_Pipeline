@@ -13,7 +13,7 @@ import (
 )
 
 var (
-	wsConnections    metric.Int64Gauge
+	wsConnections    metric.Int64UpDownCounter
 	wsMessageLatency metric.Float64Histogram
 )
 
@@ -39,10 +39,12 @@ func InitMetrics(ctx context.Context) (func(), error) {
 
 	meter := provider.Meter("websocket-gateway")
 
-	wsConnections, _ = meter.Int64Gauge("ws.active_connections",
+	wsConnections, _ = meter.Int64UpDownCounter("ws.connections_active",
 		metric.WithDescription("Currently active WebSocket connections"))
-	wsMessageLatency, _ = meter.Float64Histogram("ws.message.processing_time_ms",
-		metric.WithDescription("Time to broadcast a message in ms"))
+	wsMessageLatency, _ = meter.Float64Histogram("ws.broadcast_latency",
+		metric.WithDescription("Time to broadcast a message in ms"),
+		metric.WithExplicitBucketBoundaries(0.001, 0.005, 0.01, 0.05, 0.1, 0.25, 0.5, 1.0, 5.0),
+	)
 
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
